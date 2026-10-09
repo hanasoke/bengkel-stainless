@@ -36,6 +36,20 @@ func (h *ProductHandler) Create(c *gin.Context) {
 		return
 	}
 
+	// ✅ Cek duplikat DULU sebelum insert
+	exists, err := h.repo.KodeExists(c.Request.Context(), p.Kode)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if exists {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Kode produk sudah dipakai, gunakan kode lain",
+		})
+		return
+	}
+
+	// Baru insert
 	id, err := h.repo.Create(c.Request.Context(), &p)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -139,5 +153,6 @@ func (h *ProductHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "Produk berhasil dihapus"})
+
+	c.JSON(http.StatusOK, gin.H{"message": "Produk berhasil dihapus permanen"})
 }

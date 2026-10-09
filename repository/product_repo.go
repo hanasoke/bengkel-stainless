@@ -7,6 +7,8 @@ import (
 
 	"bengkel-stainless/config"
 	"bengkel-stainless/models"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 var ErrNotFound = errors.New("produk tidak ditemukan")
@@ -15,6 +17,16 @@ type ProductRepo struct{}
 
 func NewProductRepo() *ProductRepo {
 	return &ProductRepo{}
+}
+
+func (r *ProductRepo) KodeExists(ctx context.Context, kode string) (bool, error) {
+	var count int
+	err := config.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM products WHERE kode = ?`, kode).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // CREATE
@@ -35,22 +47,20 @@ func (r *ProductRepo) Create(ctx context.Context, p *models.Product) (int64, err
 	return res.LastInsertId()
 }
 
-// READ - semua (dengan pagination & search)
+// READ - semua (TANPA deleted_at)
 func (r *ProductRepo) GetAll(ctx context.Context, search string, limit, offset int) ([]models.Product, int, error) {
-	// Hitung total
-	countQuery := `SELECT COUNT(*) FROM products 
-		WHERE deleted_at IS NULL AND (nama LIKE ? OR kode LIKE ?)`
-	var total int
 	like := "%" + search + "%"
+
+	countQuery := `SELECT COUNT(*) FROM products WHERE nama LIKE ? OR kode LIKE ?`
+	var total int
 	if err := config.DB.QueryRowContext(ctx, countQuery, like, like).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	// Ambil data
 	query := `SELECT id, kode, nama, category_id, material_id, ketebalan, panjang, lebar,
 	          satuan, harga_beli, harga_jual, stok, stok_minimal, created_at, updated_at
 	          FROM products
-	          WHERE deleted_at IS NULL AND (nama LIKE ? OR kode LIKE ?)
+	          WHERE nama LIKE ? OR kode LIKE ?
 	          ORDER BY id DESC LIMIT ? OFFSET ?`
 
 	rows, err := config.DB.QueryContext(ctx, query, like, like, limit, offset)
@@ -75,11 +85,11 @@ func (r *ProductRepo) GetAll(ctx context.Context, search string, limit, offset i
 	return products, total, nil
 }
 
-// READ - by ID
+// READ - by ID (TANPA deleted_at)
 func (r *ProductRepo) GetByID(ctx context.Context, id int64) (*models.Product, error) {
 	query := `SELECT id, kode, nama, category_id, material_id, ketebalan, panjang, lebar,
 	          satuan, harga_beli, harga_jual, stok, stok_minimal, created_at, updated_at
-	          FROM products WHERE id = ? AND deleted_at IS NULL`
+	          FROM products WHERE id = ?`
 
 	var p models.Product
 	err := config.DB.QueryRowContext(ctx, query, id).Scan(
@@ -97,9 +107,8 @@ func (r *ProductRepo) GetByID(ctx context.Context, id int64) (*models.Product, e
 	return &p, nil
 }
 
-// UPDATE
+// UPDATE (TANPA deleted_at)
 func (r *ProductRepo) Update(ctx context.Context, id int64, u *models.ProductUpdate) error {
-	// Bangun query dinamis
 	query := `UPDATE products SET 
 		kode = COALESCE(?, kode),
 		nama = COALESCE(?, nama),
@@ -113,7 +122,7 @@ func (r *ProductRepo) Update(ctx context.Context, id int64, u *models.ProductUpd
 		harga_jual = COALESCE(?, harga_jual),
 		stok = COALESCE(?, stok),
 		stok_minimal = COALESCE(?, stok_minimal)
-		WHERE id = ? AND deleted_at IS NULL`
+		WHERE id = ?`
 
 	res, err := config.DB.ExecContext(ctx, query,
 		u.Kode, u.Nama, u.CategoryID, u.MaterialID,
@@ -131,13 +140,17 @@ func (r *ProductRepo) Update(ctx context.Context, id int64, u *models.ProductUpd
 	return nil
 }
 
-// DELETE (soft delete)
+// DELETE (hard delete + handle FK constraint)
 func (r *ProductRepo) Delete(ctx context.Context, id int64) error {
-	query := `UPDATE products SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`
-	res, err := config.DB.ExecContext(ctx, query, id)
+	res, err := config.DB.ExecContext(ctx, `DELETE FROM products WHERE id = ?`, id)
 	if err != nil {
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1451 {
+			return errors.New("produk tidak bisa dihapus karena masih dipakai di order")
+		}
 		return err
 	}
+
 	rows, _ := res.RowsAffected()
 	if rows == 0 {
 		return ErrNotFound
